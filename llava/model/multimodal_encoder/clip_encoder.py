@@ -29,6 +29,11 @@ class CLIPVisionTower(nn.Module):
         print("use open_clip vit") 
         self.vision_tower_name = "hf-hub:"+self.vision_tower_name #替换vision tower 和 image_processor
         self.vision_tower, self.image_processor = open_clip.create_model_from_pretrained(self.vision_tower_name)
+        
+        # 将模型移到 GPU
+        if torch.cuda.is_available():
+            self.vision_tower = self.vision_tower.cuda()
+        
         self.vision_tower.requires_grad_(False)
         
         self.hidden_states = []
