@@ -4,6 +4,7 @@ import open_clip
 from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
 from PIL import Image
 from collections import namedtuple
+from ...AlignCLIP import align_clip
 
 # 添加适配器类
 class OpenClipProcessorAdapter:
@@ -41,90 +42,84 @@ class CLIPVisionTower(nn.Module):
         if self.is_loaded:
             print('{} is already loaded, `load_model` called again, skipping.'.format(self.vision_tower_name))
             return
-        print("use open_clip vit") 
-        self.vision_tower_name = "hf-hub:"+self.vision_tower_name #替换vision tower 和 image_processor
-        self.vision_tower, image_processor = open_clip.create_model_from_pretrained(self.vision_tower_name)
+        print("use AlignCLIP vit") 
         
-        # 使用适配器包装open_clip的图像处理器，使其具有preprocess方法
+        # 添加hf-hub前缀
+        if not self.vision_tower_name.startswith("hf-hub:"):
+            self.vision_tower_name = "hf-hub:" + self.vision_tower_name
+        
+        # 创建模型并获取预处理器
+        self.vision_tower, image_processor = align_clip.factory.create_model_from_pretrained(
+            self.vision_tower_name,
+            precision="fp32",  # 使用fp32避免转换问题
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )
+        
+        # 使用适配器包装transform
         self.image_processor = OpenClipProcessorAdapter(image_processor)
         
-        print(self.vision_tower)
-        # 确定正确的hidden_size值
+        # 确定hidden_size
+        embed_dim = 768  # 默认值
         if hasattr(self.vision_tower, 'embed_dim'):
             embed_dim = self.vision_tower.embed_dim
-        elif hasattr(self.vision_tower, 'visual') and hasattr(self.vision_tower.visual, 'embed_dim'):
-            embed_dim = self.vision_tower.visual.embed_dim
-        else:
-            # 如果无法从模型直接获取，使用默认值
-            embed_dim = 768  # ViT-L 的典型维度
-            print(f"Warning: Could not determine embed_dim from model, using default: {embed_dim}")
         
         # 创建配置对象
         self._config_obj = type('obj', (object,), {
             'hidden_size': embed_dim,
             'image_size': 224,  
-            'patch_size': 14,   
+            'patch_size': 16,  # AlignCLIP使用16x16
         })
         
-        # 将模型移到 GPU
-        if torch.cuda.is_available():
-            self.vision_tower = self.vision_tower.cuda()
-        
         self.vision_tower.requires_grad_(False)
-        
-        self.hidden_states = []
-        
-        def collect_hidden_states(module, input, output):
-            self.hidden_states.append(output)
-        #每一层都添加
-        for block in self.vision_tower.visual.transformer.resblocks:
-            block.register_forward_hook(collect_hidden_states)
-            
         self.is_loaded = True
-
-    def feature_select(self, image_forward_outs):
-        image_features = image_forward_outs.hidden_states[self.select_layer]
-        if self.select_feature == 'patch':
-            image_features = image_features[:, 1:]
-        elif self.select_feature == 'cls_patch':
-            image_features = image_features
-        else:
-            raise ValueError(f'Unexpected select feature: {self.select_feature}')
-        return image_features
 
     @torch.no_grad()
     def forward(self, images):
+        """直接从AlignCLIP的编码流程中提取特征"""
         if type(images) is list:
             image_features = []
             for image in images:
-                self.hidden_states = []
-                
-                image_forward_out = self.vision_tower.encode_image(image.to(device=self.device, dtype=self.dtype))
-                
-                class ModelOutput:
-                    def __init__(self, hidden_states):
-                        self.hidden_states = hidden_states
-                
-                output = ModelOutput(self.hidden_states)
-                
-                image_feature = self.feature_select(output).to(image.dtype)
+                # 直接处理单张图像
+                image_feature = self._extract_features(image.to(device=self.device, dtype=self.dtype))
                 image_features.append(image_feature)
         else:
-            self.hidden_states = []
-            
-            image_forward_outs = self.vision_tower.encode_image(images.to(device=self.device, dtype=self.dtype))
-            
-            class ModelOutput:
-                def __init__(self, hidden_states):
-                    self.hidden_states = hidden_states
-            
-            output = ModelOutput(self.hidden_states)
-            
-            image_features = self.feature_select(output).to(images.dtype)
+            # 批量处理
+            image_features = self._extract_features(images.to(device=self.device, dtype=self.dtype))
         
-        # 修改这一行，使用bfloat16而不是float16
+        # 统一转换为bfloat16
         image_features = image_features.to(device=self.device, dtype=torch.bfloat16)
         return image_features
+
+    def _extract_features(self, image):
+        """从模型中提取特定层的特征"""
+        with torch.no_grad():
+            # 第1步：获取视觉特征
+            x = self.vision_tower.visual(image)
+            
+            # 第2步：调整维度并通过transformer处理
+            x = x.permute(1, 0, 2)  
+            
+            # 收集每个transformer块的输出
+            block_outputs = []
+            for i, block in enumerate(self.vision_tower.transformer.resblocks):
+                x = block(x)
+                if i == len(self.vision_tower.transformer.resblocks) - 1 or i == self.select_layer:
+                    # 存储所需层的输出
+                    block_outputs.append(x)
+            
+            # 调整回原始维度
+            features = block_outputs[0 if self.select_layer >= len(self.vision_tower.transformer.resblocks) else -1]
+            features = features.permute(1, 0, 2)  
+            
+            # 根据select_feature选择特征
+            if self.select_feature == 'patch':
+                return features[:, 1:]  # 跳过CLS token
+            elif self.select_feature == 'cls_patch':
+                return features  # 使用所有token  
+            elif self.select_feature == 'cls':
+                return features[:, 0:1]  # 只用CLS token
+            else:
+                raise ValueError(f'Unexpected select feature: {self.select_feature}')
 
     @property
     def dummy_feature(self):

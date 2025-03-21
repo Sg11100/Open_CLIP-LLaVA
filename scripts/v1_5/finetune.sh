@@ -6,7 +6,7 @@ deepspeed llava/train/train_mem.py \
     --version v1 \
     --data_path /lpai/dataset/llava-ft/0-1-4/llava_ft/llava_v1_5_mix665k.json \
     --image_folder /lpai/dataset/llava-ft/0-1-4/llava_ft/data \
-    --vision_tower laion/CLIP-ViT-L-14-laion2B-s32B-b82K \
+    --vision_tower sarahESL/AlignCLIP \
     --pretrain_mm_mlp_adapter ./checkpoints/llava-v1.5-7b-pretrain/checkpoint-100/mm_projector.bin \
     --mm_projector_type mlp2x_gelu \
     --mm_vision_select_layer -2 \
@@ -32,6 +32,6 @@ deepspeed llava/train/train_mem.py \
     --tf32 True \
     --model_max_length 2048 \
     --gradient_checkpointing True \
-    --dataloader_num_workers 4 \
+    --dataloader_num_workers 1 \
     --lazy_preprocess True \
     --report_to wandb
