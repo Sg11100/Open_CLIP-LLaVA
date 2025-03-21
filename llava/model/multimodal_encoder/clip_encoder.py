@@ -5,6 +5,21 @@ from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
 from PIL import Image
 from collections import namedtuple
 
+# 添加适配器类
+class OpenClipProcessorAdapter:
+    def __init__(self, transform):
+        self.transform = transform
+    
+    def preprocess(self, images, return_tensors=None):
+        if isinstance(images, Image.Image):
+            images = [images]
+        
+        # 应用变换
+        pixel_values = [self.transform(img) for img in images]
+        pixel_values = torch.stack(pixel_values)
+        
+        return {'pixel_values': pixel_values}
+
 class CLIPVisionTower(nn.Module):
     def __init__(self, vision_tower, args, delay_load=False):
         super().__init__()
@@ -28,7 +43,28 @@ class CLIPVisionTower(nn.Module):
             return
         print("use open_clip vit") 
         self.vision_tower_name = "hf-hub:"+self.vision_tower_name #替换vision tower 和 image_processor
-        self.vision_tower, self.image_processor = open_clip.create_model_from_pretrained(self.vision_tower_name)
+        self.vision_tower, image_processor = open_clip.create_model_from_pretrained(self.vision_tower_name)
+        
+        # 使用适配器包装open_clip的图像处理器，使其具有preprocess方法
+        self.image_processor = OpenClipProcessorAdapter(image_processor)
+        
+        print(self.vision_tower)
+        # 确定正确的hidden_size值
+        if hasattr(self.vision_tower, 'embed_dim'):
+            embed_dim = self.vision_tower.embed_dim
+        elif hasattr(self.vision_tower, 'visual') and hasattr(self.vision_tower.visual, 'embed_dim'):
+            embed_dim = self.vision_tower.visual.embed_dim
+        else:
+            # 如果无法从模型直接获取，使用默认值
+            embed_dim = 768  # ViT-L 的典型维度
+            print(f"Warning: Could not determine embed_dim from model, using default: {embed_dim}")
+        
+        # 创建配置对象
+        self._config_obj = type('obj', (object,), {
+            'hidden_size': embed_dim,
+            'image_size': 224,  
+            'patch_size': 14,   
+        })
         
         # 将模型移到 GPU
         if torch.cuda.is_available():
@@ -86,7 +122,8 @@ class CLIPVisionTower(nn.Module):
             
             image_features = self.feature_select(output).to(images.dtype)
         
-        image_features = image_features.to(device=self.device, dtype=torch.float16)
+        # 修改这一行，使用bfloat16而不是float16
+        image_features = image_features.to(device=self.device, dtype=torch.bfloat16)
         return image_features
 
     @property
@@ -106,7 +143,7 @@ class CLIPVisionTower(nn.Module):
     @property
     def config(self):
         if self.is_loaded:
-            return self.vision_tower.config
+            return self._config_obj
         else:
             return self.cfg_only
 
