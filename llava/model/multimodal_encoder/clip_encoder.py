@@ -9,6 +9,37 @@ from collections import namedtuple
 class OpenClipProcessorAdapter:
     def __init__(self, transform):
         self.transform = transform
+        
+        # 从transform中提取参数
+        self.size = {'shortest_edge': 224}  # 从Resize(size=224)
+        self.crop_size = {'height': 224, 'width': 224}  # 从CenterCrop(size=(224, 224))
+        
+        # 提取Normalize参数
+        self.image_mean = [0.5, 0.5, 0.5]  # 从Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        self.image_std = [0.5, 0.5, 0.5]
+        
+        # 处理标志
+        self.do_center_crop = True  # 有CenterCrop
+        self.do_resize = True       # 有Resize
+        self.do_rescale = True      # ToTensor会将[0,255]缩放到[0,1]
+        self.do_normalize = True    # 有Normalize
+        self.do_convert_rgb = True  # 有_convert_to_rgb
+        
+        # 如果transform有其他配置，尝试更准确地提取
+        if hasattr(transform, 'transforms'):
+            for t in transform.transforms:
+                # 从Resize提取size
+                if hasattr(t, 'size') and t.__class__.__name__ == 'Resize':
+                    if t.size:
+                        self.size = {'shortest_edge': t.size}
+                # 从CenterCrop提取crop_size
+                elif hasattr(t, 'size') and t.__class__.__name__ == 'CenterCrop':
+                    if t.size:
+                        self.crop_size = {'height': t.size[0], 'width': t.size[1]}
+                # 从Normalize提取mean和std
+                elif hasattr(t, 'mean') and hasattr(t, 'std') and t.__class__.__name__ == 'Normalize':
+                    self.image_mean = t.mean
+                    self.image_std = t.std
     
     def preprocess(self, images, return_tensors=None):
         if isinstance(images, Image.Image):
@@ -44,7 +75,8 @@ class CLIPVisionTower(nn.Module):
         print("use open_clip vit") 
         self.vision_tower_name = "hf-hub:"+self.vision_tower_name #替换vision tower 和 image_processor
         self.vision_tower, image_processor = open_clip.create_model_from_pretrained(self.vision_tower_name)
-        
+        print(image_processor)
+        print("genshen")
         # 使用适配器包装open_clip的图像处理器，使其具有preprocess方法
         self.image_processor = OpenClipProcessorAdapter(image_processor)
         
@@ -56,7 +88,7 @@ class CLIPVisionTower(nn.Module):
             embed_dim = self.vision_tower.visual.embed_dim
         else:
             # 如果无法从模型直接获取，使用默认值
-            embed_dim = 768  # ViT-L 的典型维度
+            embed_dim = 1024  # ViT-L 的典型维度
             print(f"Warning: Could not determine embed_dim from model, using default: {embed_dim}")
         
         # 创建配置对象

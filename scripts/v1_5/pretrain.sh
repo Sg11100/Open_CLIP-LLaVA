@@ -6,7 +6,7 @@ deepspeed llava/train/train_mem.py \
     --version plain \
     --data_path /lpai/dataset/llava-pre/0-1-0/LLaVA-Pretrain/blip_laion_cc_sbu_558k.json \
     --image_folder /lpai/dataset/llava-pre/0-1-0/LLaVA-Pretrain/images \
-    --vision_tower laion/CLIP-ViT-B-16-laion2B-s34B-b88K \
+    --vision_tower laion/CLIP-ViT-L-14-laion2B-s32B-b82K  \
     --mm_projector_type mlp2x_gelu \
     --tune_mm_mlp_adapter True \
     --mm_vision_select_layer -2 \
