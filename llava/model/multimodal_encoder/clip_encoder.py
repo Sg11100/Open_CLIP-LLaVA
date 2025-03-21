@@ -6,10 +6,41 @@ from PIL import Image
 from collections import namedtuple
 from ...AlignCLIP import align_clip
 
-# 添加适配器类
+# 修改适配器类以匹配新的预处理器参数
 class OpenClipProcessorAdapter:
     def __init__(self, transform):
         self.transform = transform
+        
+        self.size = {'shortest_edge': 224} 
+        self.crop_size = {'height': 224, 'width': 224}  
+        
+        self.image_mean = [0.48145466, 0.4578275, 0.40821073]
+        self.image_std = [0.26862954, 0.26130258, 0.27577711]
+        
+        # 处理标志
+        self.do_center_crop = True  # 有CenterCrop
+        self.do_resize = True       # 有Resize
+        self.do_rescale = True      # ToTensor会将[0,255]缩放到[0,1]
+        self.do_normalize = True    # 有Normalize
+        self.do_convert_rgb = True  # 有_convert_to_rgb
+        
+        # 如果transform有其他配置，尝试从转换中提取实际参数
+        if hasattr(transform, 'transforms'):
+            for t in transform.transforms:
+                # 从Resize提取size
+                if hasattr(t, 'size') and t.__class__.__name__ == 'Resize':
+                    if isinstance(t.size, int):
+                        self.size = {'shortest_edge': t.size}
+                # 从CenterCrop提取crop_size
+                elif hasattr(t, 'size') and t.__class__.__name__ == 'CenterCrop':
+                    if isinstance(t.size, tuple) and len(t.size) == 2:
+                        self.crop_size = {'height': t.size[0], 'width': t.size[1]}
+                    elif isinstance(t.size, int):
+                        self.crop_size = {'height': t.size, 'width': t.size}
+                # 从Normalize提取mean和std
+                elif hasattr(t, 'mean') and hasattr(t, 'std') and t.__class__.__name__ == 'Normalize':
+                    self.image_mean = t.mean
+                    self.image_std = t.std
     
     def preprocess(self, images, return_tensors=None):
         if isinstance(images, Image.Image):
@@ -54,6 +85,8 @@ class CLIPVisionTower(nn.Module):
             precision="fp32",  # 使用fp32避免转换问题
             device='cuda' if torch.cuda.is_available() else 'cpu'
         )
+        print(image_processor)
+        print('genshen')
         
         # 使用适配器包装transform
         self.image_processor = OpenClipProcessorAdapter(image_processor)
