@@ -6,9 +6,8 @@ MODE="both"  # 可选: pretrain, finetune, both
 MODEL_SIZE="7b"
 CUDA_VISIBLE_DEVICES="all" 
 OUTPUT_ROOT="/lpai/outputs/model"
-CUSTOM_PROJECTOR=""  # 新增: 用户指定的projector路径
+CUSTOM_PROJECTOR="" 
 
-# 解析命令行参数
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -41,7 +40,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --gpus VALUE           指定GPU (例如: 0,1,2,3, 默认: all)"
       echo "  --output_dir VALUE     输出目录 (默认: /lpai/outputs/model)"
       echo "  --projector VALUE      指定自定义projector文件路径"
-      echo "  --help, -h             显示此帮助信息"
+      echo "  --help, -h             显示帮助信息"
       echo ""
       echo "示例:"
       echo "  ./train_llava.sh --mode both --model_size 7b"
@@ -71,7 +70,7 @@ if [[ ! -z "$CUSTOM_PROJECTOR" ]]; then
   
   echo "使用指定的projector: $CUSTOM_PROJECTOR"
   
-  # 如果模式是both，则只执行微调
+  #如果模式是both，则只执行微调
   if [[ "$MODE" == "both" ]]; then
     echo "由于指定了projector，将跳过预训练阶段"
     MODE="finetune"
@@ -97,7 +96,6 @@ FINETUNE_OUTPUT="${OUTPUT_ROOT}/llava-v1.5-${MODEL_SIZE}"
 run_pretrain() {
   echo "开始预训练阶段..."
   
-  # 创建预训练输出目录
   mkdir -p ${PRETRAIN_OUTPUT}
   
   deepspeed llava/train/train_mem.py \
@@ -146,43 +144,42 @@ run_pretrain() {
 run_finetune() {
   echo "开始微调阶段..."
   
-  # 创建微调输出目录
   mkdir -p ${FINETUNE_OUTPUT}
   
-  # 确定预训练适配器路径
-  # 如果用户指定了projector，直接使用
-  if [[ ! -z "$CUSTOM_PROJECTOR" ]]; then
-    PRETRAIN_ADAPTER="$CUSTOM_PROJECTOR"
-    echo "使用指定的projector: $PRETRAIN_ADAPTER"
+# 确定预训练适配器路径
+# 如果用户指定了projector，直接使用
+if [[ ! -z "$CUSTOM_PROJECTOR" ]]; then
+  PRETRAIN_ADAPTER="$CUSTOM_PROJECTOR"
+  echo "使用指定的projector: $PRETRAIN_ADAPTER"
+else
+  
+  PRETRAIN_DIR="${PRETRAIN_OUTPUT}"
+  
+  # 修改优先级顺序：先尝试使用根目录下的适配器
+  if [ -f "${PRETRAIN_DIR}/mm_projector.bin" ]; then
+    PRETRAIN_ADAPTER="${PRETRAIN_DIR}/mm_projector.bin"
+    echo "使用预训练目录的projector: $PRETRAIN_ADAPTER"
+  # 如果不存在，再尝试使用checkpoint-100中的适配器
+  elif [ -f "${PRETRAIN_DIR}/checkpoint-100/mm_projector.bin" ]; then
+    PRETRAIN_ADAPTER="${PRETRAIN_DIR}/checkpoint-100/mm_projector.bin"
+    echo "使用预训练检查点的projector: $PRETRAIN_ADAPTER"
   else
-    
-    PRETRAIN_DIR="${PRETRAIN_OUTPUT}"
-    
-    # 先尝试使用checkpoint-100中的适配器
-    if [ -f "${PRETRAIN_DIR}/checkpoint-100/mm_projector.bin" ]; then
-      PRETRAIN_ADAPTER="${PRETRAIN_DIR}/checkpoint-100/mm_projector.bin"
-      echo "使用预训练检查点的projector: $PRETRAIN_ADAPTER"
-    # 如果不存在，尝试使用根目录下的适配器
-    elif [ -f "${PRETRAIN_DIR}/mm_projector.bin" ]; then
-      PRETRAIN_ADAPTER="${PRETRAIN_DIR}/mm_projector.bin"
-      echo "使用预训练目录的projector: $PRETRAIN_ADAPTER"
-    else
-      # 如果在"仅微调"模式下且找不到适配器文件
-      if [ "$MODE" == "finetune" ]; then
-        echo "警告: 未找到预训练适配器"
-        read -p "是否继续微调? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-          echo "微调已取消"
-          exit 1
-        fi
-        PRETRAIN_ADAPTER=""
-      else
-        echo "错误: 无法找到预训练适配器文件"
+    # 如果在"仅微调"模式下且找不到适配器文件
+    if [ "$MODE" == "finetune" ]; then
+      echo "警告: 未找到预训练适配器"
+      read -p "是否继续微调? (y/n) " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "微调已取消"
         exit 1
       fi
+      PRETRAIN_ADAPTER=""
+    else
+      echo "错误: 无法找到预训练适配器文件"
+      exit 1
     fi
   fi
+fi
   
   # 构建微调命令
   CMD="deepspeed llava/train/train_mem.py \
