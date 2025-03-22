@@ -6,7 +6,7 @@ from PIL import Image
 from collections import namedtuple
 from ...AlignCLIP import align_clip
 
-# 修改适配器类以匹配新的预处理器参数
+#适配openai的processor
 class OpenClipProcessorAdapter:
     def __init__(self, transform):
         self.transform = transform
@@ -18,11 +18,11 @@ class OpenClipProcessorAdapter:
         self.image_std = [0.26862954, 0.26130258, 0.27577711]
         
         # 处理标志
-        self.do_center_crop = True  # 有CenterCrop
-        self.do_resize = True       # 有Resize
-        self.do_rescale = True      # ToTensor会将[0,255]缩放到[0,1]
-        self.do_normalize = True    # 有Normalize
-        self.do_convert_rgb = True  # 有_convert_to_rgb
+        self.do_center_crop = True  
+        self.do_resize = True       
+        self.do_rescale = True      
+        self.do_normalize = True    
+        self.do_convert_rgb = True 
         
         # 如果transform有其他配置，尝试从转换中提取实际参数
         if hasattr(transform, 'transforms'):
@@ -85,22 +85,18 @@ class CLIPVisionTower(nn.Module):
             precision="fp32",  # 使用fp32避免转换问题
             device='cuda' if torch.cuda.is_available() else 'cpu'
         )
-        print(image_processor)
-        print('genshen')
         
-        # 使用适配器包装transform
+        # 使用适配器包装transform以适配openai的processor
         self.image_processor = OpenClipProcessorAdapter(image_processor)
         
         # 确定hidden_size
-        embed_dim = 768  # 默认值
-        if hasattr(self.vision_tower, 'embed_dim'):
-            embed_dim = self.vision_tower.embed_dim
+        embed_dim = 768  # 默认使用VIT-B-16的维度
         
         # 创建配置对象
         self._config_obj = type('obj', (object,), {
             'hidden_size': embed_dim,
             'image_size': 224,  
-            'patch_size': 16,  # AlignCLIP使用16x16
+            'patch_size': 16,  
         })
         
         self.vision_tower.requires_grad_(False)
@@ -112,11 +108,9 @@ class CLIPVisionTower(nn.Module):
         if type(images) is list:
             image_features = []
             for image in images:
-                # 直接处理单张图像
                 image_feature = self._extract_features(image.to(device=self.device, dtype=self.dtype))
                 image_features.append(image_feature)
         else:
-            # 批量处理
             image_features = self._extract_features(images.to(device=self.device, dtype=self.dtype))
         
         # 统一转换为bfloat16
@@ -126,31 +120,36 @@ class CLIPVisionTower(nn.Module):
     def _extract_features(self, image):
         """从模型中提取特定层的特征"""
         with torch.no_grad():
-            # 第1步：获取视觉特征
+            #获取视觉特征
             x = self.vision_tower.visual(image)
             
-            # 第2步：调整维度并通过transformer处理
+            #调整维度并通过transformer处理
             x = x.permute(1, 0, 2)  
             
-            # 收集每个transformer块的输出
-            block_outputs = []
+            # 正确处理负索引
+            num_blocks = len(self.vision_tower.transformer.resblocks)
+            target_layer = self.select_layer if self.select_layer >= 0 else num_blocks + self.select_layer
+            target_layer = max(0, min(target_layer, num_blocks - 1))  # 确保索引有效
+
+            selected_feature = None
             for i, block in enumerate(self.vision_tower.transformer.resblocks):
                 x = block(x)
-                if i == len(self.vision_tower.transformer.resblocks) - 1 or i == self.select_layer:
-                    # 存储所需层的输出
-                    block_outputs.append(x)
-            
-            # 调整回原始维度
-            features = block_outputs[0 if self.select_layer >= len(self.vision_tower.transformer.resblocks) else -1]
-            features = features.permute(1, 0, 2)  
+                if i == target_layer:
+                    selected_feature = x.clone()
+
+            if selected_feature is None:
+                raise ValueError(f"无法从层{self.select_layer}提取特征 (计算得到的目标层: {target_layer})")
+                    
+            # 使用选定的特征
+            features = selected_feature.permute(1, 0, 2)
             
             # 根据select_feature选择特征
             if self.select_feature == 'patch':
-                return features[:, 1:]  # 跳过CLS token
+                return features[:, 1:]  
             elif self.select_feature == 'cls_patch':
-                return features  # 使用所有token  
+                return features  
             elif self.select_feature == 'cls':
-                return features[:, 0:1]  # 只用CLS token
+                return features[:, 0:1]  
             else:
                 raise ValueError(f'Unexpected select feature: {self.select_feature}')
 
