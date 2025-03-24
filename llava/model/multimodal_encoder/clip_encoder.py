@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import open_clip
+from .. import open_clip
 from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
 from PIL import Image
 from collections import namedtuple
@@ -72,42 +72,51 @@ class CLIPVisionTower(nn.Module):
             print('{} is already loaded, `load_model` called again, skipping.'.format(self.vision_tower_name))
             return
         print("use open_clip vit") 
-        self.vision_tower_name = "hf-hub:"+self.vision_tower_name #替换vision tower 和 image_processor
-        self.vision_tower, image_processor = open_clip.create_model_from_pretrained(self.vision_tower_name)
-        # 使用适配器包装open_clip的图像处理器，使其具有preprocess方法
+        
+        self.vision_tower, image_processor = open_clip.create_model_from_pretrained(
+            model_name='ViT-B-16',
+            pretrained=self.vision_tower_name,
+            device='cuda',
+            precision='fp32'  # 改为fp32避免数据类型问题
+        )      
+        # 使用适配器包装open_clip的图像处理器
         self.image_processor = OpenClipProcessorAdapter(image_processor)
         
-        # 确定正确的hidden_size值
-        if hasattr(self.vision_tower, 'embed_dim'):
-            embed_dim = self.vision_tower.embed_dim
+        # 正确检测嵌入维度
+        if hasattr(self.vision_tower, 'visual') and hasattr(self.vision_tower.visual, 'conv1'):
+            # 对于ViT模型，可以从卷积层输出维度获取
+            embed_dim = self.vision_tower.visual.conv1.out_channels
+            print(f"Detected embed_dim: {embed_dim}")
         elif hasattr(self.vision_tower, 'visual') and hasattr(self.vision_tower.visual, 'embed_dim'):
             embed_dim = self.vision_tower.visual.embed_dim
+            print(f"Detected embed_dim from visual.embed_dim: {embed_dim}")
+        elif hasattr(self.vision_tower, 'embed_dim'):
+            embed_dim = self.vision_tower.embed_dim
+            print(f"Detected embed_dim from model.embed_dim: {embed_dim}")
         else:
-            # 如果无法从模型直接获取，使用默认值
-            embed_dim = 1024  # ViT-L 的典型维度
-            print(f"Warning: Could not determine embed_dim from model, using default: {embed_dim}")
+            embed_dim = 768 #ViT-B的默认维度
+            print(f"Using default embed_dim: {embed_dim}")
         
         # 创建配置对象
         self._config_obj = type('obj', (object,), {
             'hidden_size': embed_dim,
-            'image_size': 224,  
-            'patch_size': 14,   
+            'image_size': 224,
+            'patch_size': 16,  
         })
         
-        # 将模型移到 GPU
-        if torch.cuda.is_available():
-            self.vision_tower = self.vision_tower.cuda()
-        
+        #冻结参数
         self.vision_tower.requires_grad_(False)
         
+        # 收集隐藏状态
         self.hidden_states = []
         
         def collect_hidden_states(module, input, output):
             self.hidden_states.append(output)
-        #每一层都添加
+        
+        # 为每个ResidualAttentionBlock注册钩子
         for block in self.vision_tower.visual.transformer.resblocks:
             block.register_forward_hook(collect_hidden_states)
-            
+        
         self.is_loaded = True
 
     def feature_select(self, image_forward_outs):
@@ -122,12 +131,17 @@ class CLIPVisionTower(nn.Module):
 
     @torch.no_grad()
     def forward(self, images):
+        # 获取模型权重的数据类型
+        model_dtype = next(self.vision_tower.parameters()).dtype
+        
         if type(images) is list:
             image_features = []
             for image in images:
                 self.hidden_states = []
                 
-                image_forward_out = self.vision_tower.encode_image(image.to(device=self.device, dtype=self.dtype))
+                # 将输入与模型权重保持相同的数据类型
+                image_same_dtype = image.to(device=self.device, dtype=model_dtype)
+                image_forward_out = self.vision_tower.encode_image(image_same_dtype)
                 
                 class ModelOutput:
                     def __init__(self, hidden_states):
@@ -135,12 +149,14 @@ class CLIPVisionTower(nn.Module):
                 
                 output = ModelOutput(self.hidden_states)
                 
-                image_feature = self.feature_select(output).to(image.dtype)
+                image_feature = self.feature_select(output)
                 image_features.append(image_feature)
         else:
             self.hidden_states = []
             
-            image_forward_outs = self.vision_tower.encode_image(images.to(device=self.device, dtype=self.dtype))
+            # 将输入与模型权重保持相同的数据类型
+            images_same_dtype = images.to(device=self.device, dtype=model_dtype)
+            image_forward_outs = self.vision_tower.encode_image(images_same_dtype)
             
             class ModelOutput:
                 def __init__(self, hidden_states):
@@ -148,9 +164,11 @@ class CLIPVisionTower(nn.Module):
             
             output = ModelOutput(self.hidden_states)
             
-            image_features = self.feature_select(output).to(images.dtype)
+            image_features = self.feature_select(output)
         
-        image_features = image_features.to(device=self.device, dtype=torch.bfloat16)
+        # 确保返回的特征是您需要的数据类型(如bfloat16)
+        target_dtype = torch.bfloat16  
+        image_features = image_features.to(device=self.device, dtype=target_dtype)
         return image_features
 
     @property

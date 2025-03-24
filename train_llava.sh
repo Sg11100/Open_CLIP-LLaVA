@@ -88,9 +88,9 @@ mkdir -p ${OUTPUT_ROOT}
 echo "输出目录: ${OUTPUT_ROOT}"
 
 # 预训练输出目录
-PRETRAIN_OUTPUT="${OUTPUT_ROOT}/llava-v1.5-${MODEL_SIZE}-pretrain"
+PRETRAIN_OUTPUT="${OUTPUT_ROOT}/llava-v1.5-openclip-${MODEL_SIZE}-pretrain"
 # 微调输出目录
-FINETUNE_OUTPUT="${OUTPUT_ROOT}/llava-v1.5-${MODEL_SIZE}"
+FINETUNE_OUTPUT="${OUTPUT_ROOT}/llava-v1.5-openclip-${MODEL_SIZE}"
 
 # 预训练函数
 run_pretrain() {
@@ -104,7 +104,7 @@ run_pretrain() {
     --version plain \
     --data_path /lpai/dataset/llava-pre/0-1-0/LLaVA-Pretrain/blip_laion_cc_sbu_558k.json \
     --image_folder /lpai/dataset/llava-pre/0-1-0/LLaVA-Pretrain/images \
-    --vision_tower laion/CLIP-ViT-L-14-laion2B-s32B-b82K \
+    --vision_tower /lpai/models/alignclip/clip30ecc12m/clip_vitb_30ep_cc12m/clip-vitb16-cc12m-epochs30/checkpoints/epoch_30.pt \
     --mm_projector_type mlp2x_gelu \
     --tune_mm_mlp_adapter True \
     --mm_vision_select_layer -2 \
@@ -139,7 +139,6 @@ run_pretrain() {
    
   echo "预训练阶段完成"
 }
-
 # 微调函数
 run_finetune() {
   echo "开始微调阶段..."
@@ -155,7 +154,7 @@ run_finetune() {
     
     PRETRAIN_DIR="${PRETRAIN_OUTPUT}"
     
-    # 修改优先级顺序：先尝试使用根目录下的适配器
+    # 先尝试使用根目录下的适配器
     if [ -f "${PRETRAIN_DIR}/mm_projector.bin" ]; then
       PRETRAIN_ADAPTER="${PRETRAIN_DIR}/mm_projector.bin"
       echo "使用预训练目录的projector: $PRETRAIN_ADAPTER"
@@ -183,12 +182,12 @@ run_finetune() {
   
   # 构建微调命令
   CMD="deepspeed llava/train/train_mem.py \
-    --deepspeed ./scripts/zero22.json \
+    --deepspeed ./scripts/zero3.json \
     --model_name_or_path lmsys/vicuna-${MODEL_SIZE}-v1.5 \
     --version v1 \
     --data_path /lpai/dataset/llava-ft/0-1-4/llava_ft/llava_v1_5_mix665k.json \
     --image_folder /lpai/dataset/llava-ft/0-1-4/llava_ft/data \
-    --vision_tower laion/CLIP-ViT-L-14-laion2B-s32B-b82K"
+    --vision_tower /lpai/models/alignclip/clip30ecc12m/clip_vitb_30ep_cc12m/clip-vitb16-cc12m-epochs30/checkpoints/epoch_30.pt"
   
   # 如果有预训练适配器，添加到命令中
   if [ ! -z "$PRETRAIN_ADAPTER" ]; then
